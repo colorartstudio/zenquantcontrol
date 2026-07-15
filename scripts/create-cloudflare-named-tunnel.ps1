@@ -6,13 +6,29 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $settings = Get-CloudflareNamedTunnelSettings -ProjectRoot $projectRoot
 $cloudflaredPath = Get-CloudflaredPath
 
-Ensure-CloudflareLogin -CertPath $settings.CertPath
-
 if (-not $settings.Hostname) {
   throw 'Defina CLOUDFLARE_TUNNEL_HOSTNAME no ambiente, por exemplo api.seudominio.com, antes de criar o tunnel fixo.'
 }
 
 New-Item -ItemType Directory -Path $settings.RuntimeDir -Force | Out-Null
+
+$usingToken = Test-HasCloudflareTunnelToken -Settings $settings
+
+if ($usingToken) {
+  @{
+    tunnelName = $settings.TunnelName
+    hostname = $settings.Hostname
+    originUrl = $settings.OriginUrl
+    authMode = 'token'
+    createdVia = 'cloudflare-dashboard'
+  } | ConvertTo-Json | Set-Content $settings.InfoPath
+
+  Write-Host 'Modo token detectado. Crie o tunnel e o DNS no painel da Cloudflare, salve o Tunnel Token em CLOUDFLARE_TUNNEL_TOKEN e depois rode npm run tunnel:fixed:start.'
+  Write-Host "Arquivo local atualizado em: $($settings.InfoPath)"
+  exit 0
+}
+
+Ensure-CloudflareLogin -CertPath $settings.CertPath
 
 $existingInfo = $null
 if (Test-Path $settings.InfoPath) {

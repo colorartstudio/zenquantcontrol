@@ -15,14 +15,76 @@ function Get-CloudflaredPath {
   return $resolved
 }
 
+function Get-ProjectEnvMap {
+  param(
+    [string]$ProjectRoot
+  )
+
+  $envFilePath = Join-Path $ProjectRoot '.env'
+  $values = @{}
+
+  if (-not (Test-Path $envFilePath)) {
+    return $values
+  }
+
+  foreach ($line in Get-Content $envFilePath) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed.StartsWith('#')) {
+      continue
+    }
+
+    $separatorIndex = $trimmed.IndexOf('=')
+    if ($separatorIndex -lt 1) {
+      continue
+    }
+
+    $key = $trimmed.Substring(0, $separatorIndex).Trim()
+    $value = $trimmed.Substring($separatorIndex + 1).Trim()
+
+    if ($value.Length -ge 2) {
+      $quotedWithDouble = $value.StartsWith('"') -and $value.EndsWith('"')
+      $quotedWithSingle = $value.StartsWith("'") -and $value.EndsWith("'")
+
+      if ($quotedWithDouble -or $quotedWithSingle) {
+        $value = $value.Substring(1, $value.Length - 2)
+      }
+    }
+
+    $values[$key] = $value
+  }
+
+  return $values
+}
+
+function Get-SettingValue {
+  param(
+    [hashtable]$ProjectEnv,
+    [string]$Name,
+    [string]$DefaultValue = ''
+  )
+
+  $envItem = Get-Item -Path "Env:$Name" -ErrorAction SilentlyContinue
+  if ($envItem -and -not [string]::IsNullOrWhiteSpace([string]$envItem.Value)) {
+    return [string]$envItem.Value
+  }
+
+  if ($ProjectEnv.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace([string]$ProjectEnv[$Name])) {
+    return [string]$ProjectEnv[$Name]
+  }
+
+  return $DefaultValue
+}
+
 function Get-CloudflareNamedTunnelSettings {
   param(
     [string]$ProjectRoot
   )
 
-  $tunnelName = if ($env:CLOUDFLARE_TUNNEL_NAME) { $env:CLOUDFLARE_TUNNEL_NAME } else { 'zenquantcontrol-api' }
-  $hostname = if ($env:CLOUDFLARE_TUNNEL_HOSTNAME) { $env:CLOUDFLARE_TUNNEL_HOSTNAME } else { '' }
-  $originUrl = if ($env:CLOUDFLARE_TUNNEL_ORIGIN_URL) { $env:CLOUDFLARE_TUNNEL_ORIGIN_URL } else { 'http://127.0.0.1:4174' }
+  $projectEnv = Get-ProjectEnvMap -ProjectRoot $ProjectRoot
+  $tunnelName = Get-SettingValue -ProjectEnv $projectEnv -Name 'CLOUDFLARE_TUNNEL_NAME' -DefaultValue 'zenquantcontrol-api'
+  $hostname = Get-SettingValue -ProjectEnv $projectEnv -Name 'CLOUDFLARE_TUNNEL_HOSTNAME'
+  $originUrl = Get-SettingValue -ProjectEnv $projectEnv -Name 'CLOUDFLARE_TUNNEL_ORIGIN_URL' -DefaultValue 'http://127.0.0.1:4174'
+  $tunnelToken = (Get-SettingValue -ProjectEnv $projectEnv -Name 'CLOUDFLARE_TUNNEL_TOKEN').Trim()
   $runtimeDir = Join-Path $ProjectRoot '.runtime'
   $configPath = Join-Path $runtimeDir 'cloudflared-named.yml'
   $infoPath = Join-Path $runtimeDir 'cloudflared-named-info.json'
@@ -34,6 +96,7 @@ function Get-CloudflareNamedTunnelSettings {
     TunnelName = $tunnelName
     Hostname = $hostname
     OriginUrl = $originUrl
+    TunnelToken = $tunnelToken
     RuntimeDir = $runtimeDir
     ConfigPath = $configPath
     InfoPath = $infoPath
@@ -41,6 +104,14 @@ function Get-CloudflareNamedTunnelSettings {
     LogFile = $logFile
     CertPath = $certPath
   }
+}
+
+function Test-HasCloudflareTunnelToken {
+  param(
+    [hashtable]$Settings
+  )
+
+  return -not [string]::IsNullOrWhiteSpace($Settings.TunnelToken)
 }
 
 function Ensure-CloudflareLogin {
