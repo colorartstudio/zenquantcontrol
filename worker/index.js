@@ -122,10 +122,37 @@ const extractNumber = (text, regex) => {
     return 0;
   }
 
-  return Number(match[1].replace(/,/g, ''));
+  const cleaned = match[1].replace(/[^\d.,-]/g, '').replace(/,/g, '');
+  if (!cleaned) {
+    return 0;
+  }
+
+  return Number(cleaned);
 };
 
 const roundCurrency = (value, decimals = 6) => Number((Number(value) || 0).toFixed(decimals));
+
+const calculateRescueReinvestment = (availableAmount, currentPlusAllocation = 0) => {
+  const totalAvailable = Math.max(Number(availableAmount) || 0, 0);
+  const currentPlus = Math.max(Number(currentPlusAllocation) || 0, 0);
+  const plusGap = Math.max(0, FIXED_PLUS_ALLOCATION - currentPlus);
+  const plusAllocation = plusGap > 0
+    ? (totalAvailable >= plusGap ? plusGap : Math.floor(totalAvailable))
+    : 0;
+  const remainingAfterPlus = Math.max(totalAvailable - plusAllocation, 0);
+  const hours3Allocation = Math.floor(remainingAfterPlus);
+  const residualBalance = roundCurrency(totalAvailable - plusAllocation - hours3Allocation, 4);
+
+  return {
+    totalAvailable: roundCurrency(totalAvailable, 6),
+    plusAllocation,
+    hours3Allocation,
+    residualBalance
+  };
+};
+
+const getClaimedAvailableAmount = (claimed = []) =>
+  claimed.reduce((total, item) => total + (Number(item?.orderAmount) || 0) + (Number(item?.netIncome) || 0), 0);
 
 const parseDurationToSeconds = (value) => {
   if (!value) {
@@ -181,21 +208,21 @@ const parseTradeSnapshot = (rawText, previousLimit = 300) => {
     text.match(/Posi[cç][oõ]es abertas\s+([\s\S]*?)\s+(?:Trading limit|Limite de negocia[cç][aã]o)/i)?.[1] ||
     text;
   const allocated360Days =
-    extractNumber(positionsSection, /360Days(?:\s+\d+(?:\.\d+)?%)?\s+([\d.]+)\s*USD/i) ||
-    extractNumber(positionsSection, /360Days\s+([\d.]+)\s*USD/i);
+    extractNumber(positionsSection, /360Days(?:\s+\d+(?:\.\d+)?%)?\s+([\d.,$-]+)\s*USD/i) ||
+    extractNumber(positionsSection, /360Days\s+([\d.,$-]+)\s*USD/i);
   const allocatedPlus =
-    extractNumber(positionsSection, /Plus(?:\s+\d+(?:\.\d+)?%)?\s+([\d.]+)\s*USD/i) ||
-    extractNumber(positionsSection, /Plus\s+([\d.]+)\s*USD/i);
+    extractNumber(positionsSection, /Plus(?:\s+\d+(?:\.\d+)?%)?\s+([\d.,$-]+)\s*USD/i) ||
+    extractNumber(positionsSection, /Plus\s+([\d.,$-]+)\s*USD/i);
   const allocated3Hours =
-    extractNumber(positionsSection, /3Hours(?:\s+\d+(?:\.\d+)?%)?\s+([\d.]+)\s*USD/i) ||
-    extractNumber(positionsSection, /3Hours\s+([\d.]+)\s*USD/i);
+    extractNumber(positionsSection, /3Hours(?:\s+\d+(?:\.\d+)?%)?\s+([\d.,$-]+)\s*USD/i) ||
+    extractNumber(positionsSection, /3Hours\s+([\d.,$-]+)\s*USD/i);
   const balance =
-    extractNumber(text, /Dispon[ií]vel\s+([\d.]+)\s*USD/i) ||
-    extractNumber(text, /Available\s+([\d.]+)\s*USD/i);
+    extractNumber(text, /Dispon[ií]vel\s+([\d.,$-]+)\s*USD/i) ||
+    extractNumber(text, /Available\s+([\d.,$-]+)\s*USD/i);
 
   const limitPair =
-    text.match(/(?:Trading limit|Limite de negocia[cç][aã]o)\s+([\d.]+)\s*USD\s+(?:Increase Quota|Aumentar Cota)\s+([\d.]+)\s*\/\s*([\d.]+)\b/i) ||
-    text.match(/(?:Aumentar Cota|Increase Quota)\s+([\d.]+)\s*\/\s*([\d.]+)\b/i);
+    text.match(/(?:Trading limit|Limite de negocia[cç][aã]o)\s+([\d.,$-]+)\s*USD\s+(?:Increase Quota|Aumentar Cota)\s+([\d.,$-]+)\s*\/\s*([\d.,$-]+)\b/i) ||
+    text.match(/(?:Aumentar Cota|Increase Quota)\s+([\d.,$-]+)\s*\/\s*([\d.,$-]+)\b/i);
 
   let tradeLimit = previousLimit;
   if (limitPair) {
@@ -389,9 +416,9 @@ const parseClaimDialog = (rawText) => {
   const text = normalizeText(rawText);
 
   return {
-    orderAmount: extractNumber(text, /Order Amount\s+([\d.]+)\s*USD/i),
-    roi: extractNumber(text, /ROI\s*≈?\s+([\d.]+)%/i),
-    netIncome: extractNumber(text, /Net Income:\s*([\d.]+)\s*USD/i)
+    orderAmount: extractNumber(text, /Order Amount\s+([\d.,$-]+)\s*USD/i),
+    roi: extractNumber(text, /ROI\s*≈?\s+([\d.,$-]+)%/i),
+    netIncome: extractNumber(text, /Net Income:\s*([\d.,$-]+)\s*USD/i)
   };
 };
 
@@ -430,8 +457,26 @@ const loginToZenQuant = async (page, login, senha) => {
     const passwordInput = visibleInputs.nth(1);
     const loginButton = page.locator('uni-view.zq-cta');
 
-    await loginInput.waitFor({ state: 'visible', timeout: 20000 });
-    await passwordInput.waitFor({ state: 'visible', timeout: 20000 });
+    try {
+      await loginInput.waitFor({ state: 'visible', timeout: 20000 });
+      await passwordInput.waitFor({ state: 'visible', timeout: 20000 });
+    } catch (error) {
+      const debugText = await page.locator('body').innerText().catch(() => '');
+      const pageTitle = await page.title().catch(() => '');
+      const inputCount = await page.locator('input').count().catch(() => 0);
+      const visibleInputCount = await visibleInputs.count().catch(() => 0);
+      throw new Error(
+        [
+          'Campos de login não ficaram visíveis.',
+          `url=${page.url()}`,
+          `title=${pageTitle || 'sem_titulo'}`,
+          `inputs=${inputCount}`,
+          `visible_inputs=${visibleInputCount}`,
+          `body_excerpt=${normalizeText(debugText).slice(0, 500) || 'vazio'}`
+        ].join(' | ')
+      );
+    }
+
     await loginInput.fill(normalizeZenQuantLogin(login));
     await passwordInput.fill(senha);
 
@@ -646,36 +691,43 @@ const executeRescueCycle = async (contaId) => {
       await session.syncPromise;
     }
 
-    await ensureTradePageReady(session.page);
+    const beforeClaimText = await ensureTradePageReady(session.page);
+    const beforeClaimSnapshot = parseTradeSnapshot(beforeClaimText);
     const claimed = await claimAllAvailablePositions(session.page);
 
     let currentConta = await loadContaById(contaId);
     let pageText = await ensureTradePageReady(session.page);
     let snapshot = parseTradeSnapshot(pageText, Number(currentConta.trade_limit) || 300);
-
-    const plusGap = Math.max(0, FIXED_PLUS_ALLOCATION - snapshot.allocatedPlus);
-    const plusAmount = snapshot.balance >= plusGap ? plusGap : 0;
+    const claimedAvailableAmount = getClaimedAvailableAmount(claimed);
+    const availableForReinvestment = Math.max(
+      Number(snapshot.balance) || 0,
+      roundCurrency((Number(beforeClaimSnapshot.balance) || 0) + claimedAvailableAmount, 6)
+    );
+    const reinvestment = calculateRescueReinvestment(availableForReinvestment, snapshot.allocatedPlus);
     const injections = [];
 
-    if (plusAmount > 0) {
-      const injectedPlus = await injectIntoStrategy(session.page, 'Plus', plusAmount);
-      if (injectedPlus) {
-        injections.push({ strategy: 'Plus', amount: plusAmount });
-        currentConta = await loadContaById(contaId);
-        pageText = await ensureTradePageReady(session.page);
-        snapshot = parseTradeSnapshot(pageText, Number(currentConta.trade_limit) || 300);
+    if (reinvestment.plusAllocation > 0) {
+      const injectedPlus = await injectIntoStrategy(session.page, 'Plus', reinvestment.plusAllocation);
+      if (!injectedPlus) {
+        throw new Error('Falha ao reaplicar o valor fixo no Plus durante o ciclo de resgate.');
       }
+
+      injections.push({ strategy: 'Plus', amount: reinvestment.plusAllocation });
+      currentConta = await loadContaById(contaId);
+      pageText = await ensureTradePageReady(session.page);
+      snapshot = parseTradeSnapshot(pageText, Number(currentConta.trade_limit) || 300);
     }
 
-    const amount3Hours = Math.floor(snapshot.balance);
-    if (amount3Hours > 0) {
-      const injected3Hours = await injectIntoStrategy(session.page, '3Hours', amount3Hours);
-      if (injected3Hours) {
-        injections.push({ strategy: '3Hours', amount: amount3Hours });
-        currentConta = await loadContaById(contaId);
-        pageText = await ensureTradePageReady(session.page);
-        snapshot = parseTradeSnapshot(pageText, Number(currentConta.trade_limit) || 300);
+    if (reinvestment.hours3Allocation > 0) {
+      const injected3Hours = await injectIntoStrategy(session.page, '3Hours', reinvestment.hours3Allocation);
+      if (!injected3Hours) {
+        throw new Error('Falha ao reaplicar o restante inteiro no 3Hours durante o ciclo de resgate.');
       }
+
+      injections.push({ strategy: '3Hours', amount: reinvestment.hours3Allocation });
+      currentConta = await loadContaById(contaId);
+      pageText = await ensureTradePageReady(session.page);
+      snapshot = parseTradeSnapshot(pageText, Number(currentConta.trade_limit) || 300);
     }
 
     currentConta = await loadContaById(contaId);

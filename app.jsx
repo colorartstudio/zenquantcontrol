@@ -293,9 +293,21 @@ export default function App() {
   };
 
   const replaceAccountFromApi = (apiAccount) => {
+    if (!apiAccount?.id) {
+      return null;
+    }
+
     const mapped = mapContaRowToAccount(apiAccount);
     setAccounts((prev) => prev.map((account) => (account.id === mapped.id ? { ...account, ...mapped } : account)));
     return mapped;
+  };
+
+  const updateAccountConnectionState = (accountId, connectionState) => {
+    setAccounts((prev) => prev.map((account) => (
+      account.id === accountId
+        ? { ...account, connectionState }
+        : account
+    )));
   };
 
   const loadAccounts = async ({ silent = false } = {}) => {
@@ -401,16 +413,57 @@ export default function App() {
       const data = await apiFetch(endpoint, { method: 'POST' });
       const updatedAccount = replaceAccountFromApi(data);
 
-      if (updatedAccount.connectionState === 'conectada') {
+      if (updatedAccount?.connectionState === 'conectada') {
         addLog(`Conta ${updatedAccount.name} validada no navegador do ZenQuant e sincronizada com valores reais.`, 'success', updatedAccount.name);
         showToast(`${updatedAccount.name} sincronizada com o ZenQuant!`);
+      } else if (data?.status === 'conectando') {
+        updateAccountConnectionState(account.id, 'conectando');
+        addLog(`Reconexão de ${account.name} iniciada no backend. Aguarde a sincronização real da ZenQuant.`, 'info', account.name);
+        showToast(`Reconectando ${account.name}...`, 'info');
       } else {
-        addLog(`Conta ${updatedAccount.name} desconectada da sessão segura.`, 'info', updatedAccount.name);
-        showToast(`${updatedAccount.name} desconectada.`, 'info');
+        const targetAccount = updatedAccount || account;
+        addLog(`Conta ${targetAccount.name} desconectada da sessão segura.`, 'info', targetAccount.name);
+        showToast(`${targetAccount.name} desconectada.`, 'info');
       }
     } catch (error) {
       addLog(`Falha ao alternar conexão da conta ${account.name}: ${error.message}`, 'warning', account.name);
       showToast('Não foi possível validar o login real da conta.', 'warning');
+    } finally {
+      setConnectionLoadingId(null);
+    }
+  };
+
+  const handleReconnectAllAccounts = async () => {
+    const reconnectableAccounts = accounts.filter((account) => account.credentialConfigured);
+
+    if (reconnectableAccounts.length === 0) {
+      addLog('Nenhuma conta com credencial protegida está disponível para reconexão.', 'warning', 'Backend');
+      showToast('Nenhuma conta pronta para reconexão.', 'warning');
+      return;
+    }
+
+    setConnectionLoadingId('all');
+    addLog(`Reconexão em lote iniciada para ${reconnectableAccounts.length} conta(s).`, 'info', 'Backend');
+    showToast('Iniciando reconexão das contas...', 'info');
+
+    try {
+      for (const account of reconnectableAccounts) {
+        const data = await apiFetch(`/contas/${account.id}/connect`, { method: 'POST' });
+        if (data?.status === 'conectando') {
+          updateAccountConnectionState(account.id, 'conectando');
+          addLog(`Reconexão enviada para ${account.name}. O worker vai validar o login e sincronizar a conta.`, 'info', account.name);
+        } else {
+          const updatedAccount = replaceAccountFromApi(data);
+          if (updatedAccount?.connectionState === 'conectada') {
+            addLog(`Conta ${updatedAccount.name} validada no navegador do ZenQuant e sincronizada com valores reais.`, 'success', updatedAccount.name);
+          }
+        }
+      }
+
+      showToast('Reconexão em lote iniciada.', 'success');
+    } catch (error) {
+      addLog(`Falha ao iniciar a reconexão em lote: ${error.message}`, 'warning', 'Backend');
+      showToast('Falha ao iniciar a reconexão em lote.', 'warning');
     } finally {
       setConnectionLoadingId(null);
     }
@@ -827,8 +880,18 @@ export default function App() {
                     <span className="text-[11px] font-mono text-gray-400 block">Celular: {activeAccount?.login}</span>
                     <span className="text-[10px] text-gray-500 block mt-1">Última Operação: <strong className="text-gray-700">{activeAccount?.lastExecution}</strong></span>
                     <span className="text-[10px] text-gray-500 block mt-1">
-                      Sessão: <strong className={activeAccount?.connectionState === 'conectada' ? 'text-emerald-700' : 'text-slate-600'}>
-                        {activeAccount?.connectionState === 'conectada' ? 'Conectada' : 'Desconectada'}
+                      Sessão: <strong className={
+                        activeAccount?.connectionState === 'conectada'
+                          ? 'text-emerald-700'
+                          : activeAccount?.connectionState === 'conectando'
+                            ? 'text-amber-700'
+                            : 'text-slate-600'
+                      }>
+                        {activeAccount?.connectionState === 'conectada'
+                          ? 'Conectada'
+                          : activeAccount?.connectionState === 'conectando'
+                            ? 'Conectando'
+                            : 'Desconectada'}
                       </strong>
                       {activeAccount?.lastConnectedAt ? ` em ${activeAccount.lastConnectedAt}` : ''}
                     </span>
@@ -840,10 +903,14 @@ export default function App() {
                       {activeAccount?.status}
                     </span>
                     <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold inline-flex items-center space-x-1 mt-2 ${
-                      activeAccount?.connectionState === 'conectada' ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-700'
+                      activeAccount?.connectionState === 'conectada'
+                        ? 'bg-blue-100 text-blue-800'
+                        : activeAccount?.connectionState === 'conectando'
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-slate-100 text-slate-700'
                     }`}>
                       {activeAccount?.connectionState === 'conectada' ? <Cloud size={10} /> : <CloudOff size={10} />}
-                      <span>{activeAccount?.connectionState === 'conectada' ? 'Conta Conectada' : 'Conta Desconectada'}</span>
+                      <span>{activeAccount?.connectionState === 'conectada' ? 'Conta Conectada' : activeAccount?.connectionState === 'conectando' ? 'Conectando Conta' : 'Conta Desconectada'}</span>
                     </span>
                     <span className="text-[11px] text-gray-400 block mt-2">Disponível: <strong className="text-gray-700">${activeAccount?.balance?.toFixed(4)}</strong></span>
                   </div>
@@ -1017,24 +1084,39 @@ export default function App() {
                       {activeAccount?.credentialConfigured
                         ? activeAccount?.connectionState === 'conectada'
                           ? 'Sessão pronta para uso'
-                          : 'Credencial protegida salva'
+                          : activeAccount?.connectionState === 'conectando'
+                            ? 'Worker conectando e sincronizando agora'
+                            : 'Credencial protegida salva'
                         : 'Conta ainda não vinculada ao backend'}
                     </span>
                   </div>
                   <button
                     onClick={() => handleToggleAccountConnection(activeAccount)}
-                    disabled={!activeAccount || connectionLoadingId === activeAccount?.id || !activeAccount?.credentialConfigured}
+                    disabled={!activeAccount || connectionLoadingId === activeAccount?.id || connectionLoadingId === 'all' || !activeAccount?.credentialConfigured}
                     className={`px-4 py-2.5 rounded-xl font-extrabold text-xs uppercase shadow-sm transition-all ${
                       activeAccount?.connectionState === 'conectada'
                         ? 'bg-slate-800 hover:bg-slate-900 text-white'
+                        : activeAccount?.connectionState === 'conectando'
+                          ? 'bg-amber-500 hover:bg-amber-600 text-white'
                         : 'bg-blue-600 hover:bg-blue-700 text-white'
                     } disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
-                    {connectionLoadingId === activeAccount?.id
+                    {connectionLoadingId === activeAccount?.id || connectionLoadingId === 'all'
                       ? 'Conectando...'
                       : activeAccount?.connectionState === 'conectada'
                         ? 'Desconectar Conta'
+                        : activeAccount?.connectionState === 'conectando'
+                          ? 'Conectando...'
                         : 'Conectar e Sincronizar'}
+                  </button>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    onClick={handleReconnectAllAccounts}
+                    disabled={!isSupabaseConnected || connectionLoadingId !== null}
+                    className="px-4 py-2 rounded-xl font-extrabold text-[11px] uppercase shadow-sm transition-all bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {connectionLoadingId === 'all' ? 'Reconectando Contas...' : 'Reconectar Todas as Contas'}
                   </button>
                 </div>
               </div>

@@ -854,8 +854,9 @@ app.post('/api/contas/:id/connect', async (req, res) => {
   }
 
   try {
-    const conta = await callWorker(`/internal/accounts/${contaId}/connect`, { method: 'POST' });
-    res.json(conta);
+    await supabaseAdmin.from('contas').update({ connection_state: 'conectando' }).eq('id', contaId);
+    callWorker(`/internal/accounts/${contaId}/connect`, { method: 'POST' }).catch(() => {});
+    res.status(202).json({ ok: true, status: 'conectando' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
