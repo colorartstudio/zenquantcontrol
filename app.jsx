@@ -4,13 +4,50 @@ import { Home, FileText, Settings, BarChart2, Zap, Cloud, CloudOff, Activity, Al
 // Chave identificadora do aplicativo no ecossistema
 const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'zen-quant-auto';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:4174/api';
 const DEFAULT_LIMIT = 300;
 const FIXED_PLUS_ALLOCATION = 50;
+const API_BASE_URL_STORAGE_KEY = `${APP_ID}:api-base-url`;
+const REMOTE_TUNNEL_API_BASE_URL = import.meta.env.VITE_PUBLIC_REMOTE_TUNNEL_API_URL || 'https://buyer-determines-kingston-collectors.trycloudflare.com/api';
+
+const getRuntimeHostname = () => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  return window.location.hostname || '';
+};
+
+const isLocalRuntime = () => {
+  const hostname = getRuntimeHostname();
+  return hostname === 'localhost' || hostname === '127.0.0.1';
+};
+
+const getDefaultApiBaseUrl = () => {
+  if (typeof window !== 'undefined') {
+    const persisted = window.localStorage.getItem(API_BASE_URL_STORAGE_KEY);
+    if (persisted) {
+      return persisted;
+    }
+  }
+
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+
+  return isLocalRuntime() ? 'http://127.0.0.1:4174/api' : REMOTE_TUNNEL_API_BASE_URL;
+};
 
 const roundCurrency = (value, decimals = 4) => Number((Number(value) || 0).toFixed(decimals));
 
 const isFiniteNumber = (value) => Number.isFinite(Number(value));
+const toOptionalNumber = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
 
 const calculateRescueReinvestment = (availableAmount) => {
   const totalAvailable = Math.max(Number(availableAmount) || 0, 0);
@@ -142,7 +179,7 @@ const mapContaRowToAccount = (item) =>
     allocated360Days: Number(item.allocated_360days) || 0,
     allocatedPlus: Number(item.allocated_plus) || 0,
     allocated3Hours: Number(item.allocated_3hours) || 0,
-    timer: Number(item.timer) || 10800,
+    timer: toOptionalNumber(item.timer) ?? 10800,
     plusCountdownLabel: item.plus_countdown_label || null,
     plusCountdownSeconds: isFiniteNumber(item.plus_countdown_seconds) ? Number(item.plus_countdown_seconds) : null,
     hours3CountdownLabel: item.hours3_countdown_label || null,
@@ -181,8 +218,9 @@ export default function App() {
   const cycleInFlightRef = useRef(new Set());
 
   // Estados da integração segura
-  const [apiBaseUrl, setApiBaseUrl] = useState(API_BASE_URL);
+  const [apiBaseUrl, setApiBaseUrl] = useState(getDefaultApiBaseUrl);
   const [isSupabaseConnected, setIsSupabaseConnected] = useState(false);
+  const [isRemoteFrontend] = useState(!isLocalRuntime());
 
   const showToast = (msg, type = 'success') => {
     setToastMessage({ text: msg, type });
@@ -204,6 +242,19 @@ export default function App() {
   };
 
   const [accounts, setAccounts] = useState(FALLBACK_ACCOUNTS);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (apiBaseUrl) {
+      window.localStorage.setItem(API_BASE_URL_STORAGE_KEY, apiBaseUrl);
+      return;
+    }
+
+    window.localStorage.removeItem(API_BASE_URL_STORAGE_KEY);
+  }, [apiBaseUrl]);
 
   const apiFetch = async (path, options = {}) => {
     const response = await fetch(`${apiBaseUrl}${path}`, {
@@ -290,6 +341,12 @@ export default function App() {
   useEffect(() => {
     if (apiBaseUrl) {
       initializeSupabase();
+      return;
+    }
+
+    if (isRemoteFrontend) {
+      setAccounts([]);
+      addLog('Frontend publicado sem API pública. Para usar no celular, exponha a API/worker em uma URL pública e configure essa Base URL.', 'warning', 'Backend');
       return;
     }
 
@@ -737,8 +794,31 @@ export default function App() {
           {/* */}
           {currentView === 'home' && (
             <div className="space-y-4 animate-fadeIn">
+              {isRemoteFrontend && !isSupabaseConnected && (
+                <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-900 shadow-sm">
+                  <div className="flex items-start space-x-2">
+                    <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-sm font-bold">Frontend publicado sem backend público</p>
+                      <p className="mt-1 text-xs leading-relaxed">
+                        No celular, a Vercel não consegue acessar a API/worker que estão rodando no seu desktop. Para ver e conectar `Alfabrazil` e `Vipbrazil` fora da sua máquina, você precisa informar aqui uma URL pública da API.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {accounts.length === 0 && (
+                <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+                  <p className="text-sm font-bold text-slate-800">Nenhuma conta carregada</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Abra `Ajustes`, informe a Base URL pública da API segura e sincronize para listar as contas reais.
+                  </p>
+                </div>
+              )}
               
               {/* CARTÃO DA CONTA ATIVA */}
+              {activeAccount && (
               <div className="bg-gradient-to-br from-white to-slate-50 p-4 rounded-2xl border border-gray-200 shadow-sm relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-2.5 h-full bg-green-600"></div>
                 <div className="flex justify-between items-start pl-2">
@@ -769,9 +849,11 @@ export default function App() {
                   </div>
                 </div>
               </div>
+              )}
 
               {/* */}
               {/* POSIÇÕES DO PORTFÓLIO (Reproducing exact visual representations from aplicação.jpg and RESGATE.jpg) */}
+              {activeAccount && (
               <div>
                 <div className="flex justify-between items-center mb-2 px-1">
                   <h3 className="font-extrabold text-gray-800 text-xs tracking-wider uppercase flex items-center space-x-1">
@@ -858,9 +940,11 @@ export default function App() {
                   </div>
                 </div>
               </div>
+              )}
 
               {/* */}
               {/* PROGRESSO DO LIMITE */}
+              {activeAccount && (
               <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
                 <div className="flex justify-between items-center text-xs mb-1.5">
                   <span className="text-gray-500 font-semibold">Limite de negociação da cota</span>
@@ -873,8 +957,10 @@ export default function App() {
                   />
                 </div>
               </div>
+              )}
 
               {/* TEMPORIZADORES E CONTROLES */}
+              {activeAccount && (
               <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-4">
                 <div className="flex justify-between items-center">
                   <div>
@@ -952,6 +1038,7 @@ export default function App() {
                   </button>
                 </div>
               </div>
+              )}
 
               {/* CARD DE INFORMAÇÕES DO SCRIPT AUTOMÁTICO */}
               <div className="bg-gradient-to-r from-emerald-50 to-green-50 border border-green-200 p-4 rounded-2xl flex items-start space-x-3">

@@ -48,6 +48,11 @@ const toOptionalNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const toStoredTimer = (value, fallback = 10800) => {
+  const parsed = toOptionalNumber(value);
+  return parsed ?? fallback;
+};
+
 const toClientAccount = (row) => ({
   id: row.id,
   apelido: row.apelido,
@@ -56,7 +61,7 @@ const toClientAccount = (row) => ({
   allocated_360days: Number(row.allocated_360days) || 0,
   allocated_plus: Number(row.allocated_plus) || 0,
   allocated_3hours: Number(row.allocated_3hours) || 0,
-  timer: Number(row.timer) || 10800,
+  timer: toStoredTimer(row.timer),
   plus_countdown_label: row.plus_countdown_label || null,
   plus_countdown_seconds: toOptionalNumber(row.plus_countdown_seconds),
   hours3_countdown_label: row.hours3_countdown_label || null,
@@ -347,14 +352,37 @@ const getVisibleExactTextLocator = async (page, text, { pick = 'last' } = {}) =>
 };
 
 const clickVisibleExactText = async (page, text, options = {}) => {
-  const locator = await getVisibleExactTextLocator(page, text, options);
+  let lastError = null;
 
-  if (!locator) {
-    throw new Error(`O elemento "${text}" não está visível na tela do ZenQuant.`);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await waitForActionOverlayToClear(page, 12000);
+    const locator = await getVisibleExactTextLocator(page, text, options);
+
+    if (!locator) {
+      throw new Error(`O elemento "${text}" não está visível na tela do ZenQuant.`);
+    }
+
+    try {
+      await locator.scrollIntoViewIfNeeded().catch(() => {});
+      await locator.click({ timeout: 10000, force: attempt === 2 });
+      return locator;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 1) {
+        try {
+          await locator.evaluate((node) => {
+            node.click();
+          });
+          return locator;
+        } catch (jsError) {
+          lastError = jsError;
+        }
+      }
+      await page.waitForTimeout(1200);
+    }
   }
 
-  await locator.click({ timeout: 10000 });
-  return locator;
+  throw lastError || new Error(`Falha ao clicar em "${text}" no ZenQuant.`);
 };
 
 const parseClaimDialog = (rawText) => {
@@ -442,7 +470,8 @@ const createLiveSession = async (contaId, login, senha) => {
     refreshTimer: null,
     syncPromise: null,
     actionPromise: null,
-    lastTimerTickAt: Date.now()
+    lastTimerTickAt: Date.now(),
+    refreshFailures: 0
   };
 
   liveSessions.set(contaId, session);
@@ -520,10 +549,15 @@ const startLiveRefresh = (contaId) => {
   session.refreshTimer = setInterval(async () => {
     try {
       await syncLiveSession(contaId);
+      session.refreshFailures = 0;
     } catch (error) {
       console.error(`Falha no refresh ao vivo da conta ${contaId}:`, error.message);
-      await supabaseAdmin.from('contas').update({ connection_state: 'desconectada' }).eq('id', contaId);
-      await destroyLiveSession(contaId);
+      session.refreshFailures = (session.refreshFailures || 0) + 1;
+
+      if (session.refreshFailures >= 3) {
+        await supabaseAdmin.from('contas').update({ connection_state: 'desconectada' }).eq('id', contaId);
+        await destroyLiveSession(contaId);
+      }
     }
   }, LIVE_REFRESH_MS);
 };
